@@ -1,0 +1,7 @@
+Village,Latitude,Longitude,Population,HazardExposure,PopulationVulnerability,InfrastructureExposure,AccessibilityRisk,TerrainRisk
+Kudremukh,13.0001,75.2501,850,90,75,65,80,95
+Belthangady,12.9875,75.2972,1200,75,70,60,65,80
+Mudigere,13.1357,75.6410,1500,65,60,55,50,70
+Sakleshpur,12.9416,75.7847,2200,55,50,45,40,60
+Karkala,13.2140,74.9980,1800,40,45,40,35,50
+MangaloreRural,12.9141,74.8560,3000,30,35,30,25,35

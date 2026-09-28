@@ -1,0 +1,1626 @@
+import { useEffect, useMemo, useState } from "react";
+import IndiaHistoricalMap from "./components/IndiaHistoricalMap";
+import "./historical-risk.css";
+import {
+  MapContainer,
+  TileLayer,
+  CircleMarker,
+  Popup,
+  Polyline,
+  useMap,
+} from "react-leaflet";
+import "leaflet/dist/leaflet.css";
+
+const API_BASE = "http://127.0.0.1:8000";
+
+const HAZARDS = [
+  "Flood",
+  "Landslide",
+  "Coastal Erosion",
+  "Cloudburst",
+];
+
+const FACTOR_INFO = {
+  HazardExposure:
+    "Measures how strongly the selected disaster hazard affects the location based on environmental conditions.",
+
+  PopulationVulnerability:
+    "Represents the population-related vulnerability of the village.",
+
+  InfrastructureExposure:
+    "Represents the potential exposure of infrastructure and essential facilities.",
+
+  AccessibilityRisk:
+    "Represents difficulty in reaching the village for evacuation and emergency response.",
+
+  TerrainRisk:
+    "Represents terrain-related risk using elevation and slope characteristics.",
+};
+
+const FACTOR_NAMES = {
+  HazardExposure: "Hazard Exposure",
+  PopulationVulnerability: "Population Vulnerability",
+  InfrastructureExposure: "Infrastructure Exposure",
+  AccessibilityRisk: "Accessibility Risk",
+  TerrainRisk: "Terrain Risk",
+};
+
+function getRiskColor(category) {
+  switch (category) {
+    case "Critical":
+      return "#b91c1c";
+
+    case "High":
+      return "#ea580c";
+
+    case "Moderate":
+      return "#ca8a04";
+
+    default:
+      return "#16a34a";
+  }
+}
+
+function formatError(detail) {
+  if (!detail) {
+    return "An unknown error occurred.";
+  }
+
+  if (typeof detail === "string") {
+    return detail;
+  }
+
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") {
+          return item;
+        }
+
+        if (item?.msg) {
+          const location = Array.isArray(item.loc)
+            ? item.loc.join(" → ")
+            : "";
+
+          return location
+            ? `${location}: ${item.msg}`
+            : item.msg;
+        }
+
+        return JSON.stringify(item);
+      })
+      .join(" | ");
+  }
+
+  if (typeof detail === "object") {
+    if (detail.msg) {
+      return detail.msg;
+    }
+
+    return JSON.stringify(detail);
+  }
+
+  return String(detail);
+}
+
+function MapController({ selectedVillage }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (selectedVillage) {
+      map.flyTo(
+        [
+          Number(selectedVillage.Latitude),
+          Number(selectedVillage.Longitude),
+        ],
+        11,
+        {
+          duration: 1,
+        }
+      );
+    }
+  }, [selectedVillage, map]);
+
+  return null;
+}
+
+function MetricCard({ title, value, subtitle }) {
+  return (
+    <div className="metric-card">
+      <div className="metric-title">{title}</div>
+
+      <div className="metric-value">
+        {value}
+      </div>
+
+      {subtitle && (
+        <div className="metric-subtitle">
+          {subtitle}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FactorBar({ name, value }) {
+  const numericValue = Number(value || 0);
+
+  return (
+    <div className="factor-row">
+      <div className="factor-header">
+        <span>{name}</span>
+
+        <strong>
+          {numericValue.toFixed(2)}
+        </strong>
+      </div>
+
+      <div className="factor-track">
+        <div
+          className="factor-fill"
+          style={{
+            width: `${Math.max(
+              0,
+              Math.min(100, numericValue)
+            )}%`,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [hazard, setHazard] = useState("Flood");
+
+  const [file, setFile] = useState(null);
+
+  const [analysis, setAnalysis] = useState(null);
+
+  const [selectedVillage, setSelectedVillage] =
+    useState(null);
+
+  const [loading, setLoading] = useState(false);
+
+  const [error, setError] = useState("");
+
+  const [targetPopulation, setTargetPopulation] =
+    useState(850);
+
+  const [budget, setBudget] =
+    useState(20000000);
+
+  const [relocation, setRelocation] =
+    useState(null);
+
+  const [relocationLoading, setRelocationLoading] =
+    useState(false);
+
+  const [relocationError, setRelocationError] =
+    useState("");
+
+  const villages = analysis?.villages || [];
+
+  const selectedFactors =
+    selectedVillage?.factors || {};
+
+  const mapCenter = useMemo(() => {
+    if (selectedVillage) {
+      return [
+        Number(selectedVillage.Latitude),
+        Number(selectedVillage.Longitude),
+      ];
+    }
+
+    if (villages.length > 0) {
+      return [
+        Number(villages[0].Latitude),
+        Number(villages[0].Longitude),
+      ];
+    }
+
+    return [13.05, 75.35];
+  }, [selectedVillage, villages]);
+
+  const recommendedSite =
+    relocation?.recommended_site || null;
+
+  const routeCoordinates =
+    selectedVillage && recommendedSite
+      ? [
+          [
+            Number(selectedVillage.Latitude),
+            Number(selectedVillage.Longitude),
+          ],
+          [
+            Number(recommendedSite.latitude),
+            Number(recommendedSite.longitude),
+          ],
+        ]
+      : [];
+
+  useEffect(() => {
+    setRelocation(null);
+    setRelocationError("");
+  }, [hazard]);
+
+  function handleFileChange(event) {
+    const selectedFile =
+      event.target.files?.[0];
+
+    if (!selectedFile) {
+      return;
+    }
+
+    setFile(selectedFile);
+    setError("");
+    setAnalysis(null);
+    setSelectedVillage(null);
+    setRelocation(null);
+    setRelocationError("");
+  }
+
+  async function analyzeData() {
+    if (!file) {
+      setError(
+        "Please upload a CSV file first."
+      );
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    setAnalysis(null);
+    setSelectedVillage(null);
+    setRelocation(null);
+    setRelocationError("");
+
+    try {
+      const formData = new FormData();
+
+      formData.append("file", file);
+      formData.append("hazard", hazard);
+
+      const response = await fetch(
+        `${API_BASE}/api/analyze`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          formatError(data.detail)
+        );
+      }
+
+      setAnalysis(data);
+
+      if (
+        data.villages &&
+        data.villages.length > 0
+      ) {
+        setSelectedVillage(
+          data.villages[0]
+        );
+      }
+    } catch (err) {
+      setError(
+        err.message ||
+          "Unable to connect to the backend."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runRelocation() {
+    if (!selectedVillage) {
+      setRelocationError(
+        "Please select a village first."
+      );
+      return;
+    }
+
+    const population =
+      Number(targetPopulation);
+
+    const availableBudget =
+      Number(budget);
+
+    if (!population || population <= 0) {
+      setRelocationError(
+        "Target population must be greater than 0."
+      );
+      return;
+    }
+
+    if (
+      !availableBudget ||
+      availableBudget <= 0
+    ) {
+      setRelocationError(
+        "Budget must be greater than ₹0."
+      );
+      return;
+    }
+
+    setRelocationLoading(true);
+    setRelocation(null);
+    setRelocationError("");
+
+    try {
+      /*
+       * IMPORTANT:
+       * These names match the relocation
+       * request expected by the backend.
+       */
+
+      const formData = new FormData();
+
+formData.append(
+  "source_village",
+  selectedVillage.Village
+);
+
+formData.append(
+  "target_population",
+  String(population)
+);
+
+formData.append(
+  "budget",
+  String(availableBudget)
+);
+
+formData.append(
+  "hazard",
+  hazard
+);
+
+formData.append(
+  "risk_score",
+  String(
+    selectedVillage.RiskScore
+  )
+);
+
+const response = await fetch(
+  `${API_BASE}/api/relocate`,
+  {
+    method: "POST",
+    body: formData,
+  }
+);
+
+const data = await response.json();
+
+if (!response.ok) {
+  throw new Error(
+    formatError(data.detail)
+  );
+}
+
+setRelocation(data);        
+
+    } catch (err) {
+      console.error(
+        "Relocation error:",
+        err
+      );
+
+      setRelocationError(
+        err.message ||
+          "Relocation optimization failed."
+      );
+    } finally {
+      setRelocationLoading(false);
+    }
+  }
+
+  return (
+    <div className="app">
+
+      <header className="topbar">
+
+        <div>
+          <div className="brand">
+            PUNARVAS
+          </div>
+
+          <div className="brand-subtitle">
+            AI-Driven Disaster Relocation &
+            Rehabilitation
+          </div>
+        </div>
+
+        <div className="status-badge">
+          <span className="status-dot" />
+          LIVE ANALYSIS
+        </div>
+
+      </header>
+
+
+      <main className="dashboard">
+
+        <section className="hero">
+
+          <div>
+
+            <h1>
+              Disaster Risk & Relocation
+              Intelligence
+            </h1>
+
+            <p>
+              Upload raw village data and let
+              PUNARVAS automatically calculate
+              hazard-specific risk, visualize
+              vulnerable locations and identify
+              safer relocation sites.
+            </p>
+
+          </div>
+
+        </section>
+
+
+        <section className="control-panel">
+
+          <div className="control-group">
+
+            <label>
+              Disaster Hazard
+            </label>
+
+            <select
+              value={hazard}
+              onChange={(event) =>
+                setHazard(
+                  event.target.value
+                )
+              }
+            >
+
+              {HAZARDS.map(
+                (item) => (
+                  <option
+                    key={item}
+                    value={item}
+                  >
+                    {item}
+                  </option>
+                )
+              )}
+
+            </select>
+
+          </div>
+
+
+          <div className="control-group upload-group">
+
+            <label>
+              Raw Village CSV
+            </label>
+
+            <input
+              type="file"
+              accept=".csv"
+              onChange={
+                handleFileChange
+              }
+            />
+
+            {file && (
+              <span className="file-name">
+                {file.name}
+              </span>
+            )}
+
+          </div>
+
+
+          <button
+            className="primary-button"
+            onClick={analyzeData}
+            disabled={loading}
+          >
+            {loading
+              ? "Analyzing..."
+              : "Analyze Risk"}
+          </button>
+
+        </section>
+
+
+        <section className="csv-info">
+
+          <strong>
+            Required raw CSV columns:
+          </strong>
+
+          <span>
+            Village, Latitude, Longitude,
+            Population, Elevation,
+            RoadDistance, Rainfall,
+            DistanceFromRiver,
+            DistanceFromCoast, Slope,
+            Infrastructure
+          </span>
+
+        </section>
+
+
+        {error && (
+          <div className="error-box">
+
+            <strong>
+              Analysis Error:
+            </strong>
+
+            {" "}
+
+            {error}
+
+          </div>
+        )}
+
+
+        {analysis && (
+
+          <>
+
+            <section className="metrics-grid">
+
+              <MetricCard
+                title="Villages Analyzed"
+                value={
+                  analysis.summary
+                    ?.total_villages ?? 0
+                }
+              />
+
+              <MetricCard
+                title="Population"
+                value={(
+                  analysis.summary
+                    ?.total_population ?? 0
+                ).toLocaleString()}
+              />
+
+              <MetricCard
+                title="Critical"
+                value={
+                  analysis.summary
+                    ?.critical ?? 0
+                }
+                subtitle="Risk ≥ 75"
+              />
+
+              <MetricCard
+                title="High"
+                value={
+                  analysis.summary
+                    ?.high ?? 0
+                }
+                subtitle="Risk 60–74"
+              />
+
+              <MetricCard
+                title="Moderate"
+                value={
+                  analysis.summary
+                    ?.moderate ?? 0
+                }
+                subtitle="Risk 40–59"
+              />
+
+              <MetricCard
+                title="Low"
+                value={
+                  analysis.summary
+                    ?.low ?? 0
+                }
+                subtitle="Risk < 40"
+              />
+
+            </section>
+
+
+            <section className="content-grid">
+
+
+              <div className="map-panel">
+
+                <div className="panel-header">
+
+                  <div>
+
+                    <h2>
+                      Risk Map
+                    </h2>
+
+                    <p>
+                      {hazard} risk generated
+                      from uploaded raw data
+                    </p>
+
+                  </div>
+
+
+                  <div className="legend">
+
+                    <span>
+                      <i className="legend-critical" />
+                      Critical
+                    </span>
+
+                    <span>
+                      <i className="legend-high" />
+                      High
+                    </span>
+
+                    <span>
+                      <i className="legend-moderate" />
+                      Moderate
+                    </span>
+
+                    <span>
+                      <i className="legend-low" />
+                      Low
+                    </span>
+
+                  </div>
+
+                </div>
+
+
+                <div className="map-container">
+
+                  <MapContainer
+                    center={mapCenter}
+                    zoom={9}
+                    scrollWheelZoom={true}
+                    style={{
+                      height: "100%",
+                      width: "100%",
+                    }}
+                  >
+
+                    <TileLayer
+                      attribution="&copy; OpenStreetMap contributors"
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    />
+
+                    <MapController
+                      selectedVillage={
+                        selectedVillage
+                      }
+                    />
+
+
+                    {villages.map(
+                      (village) => (
+
+                        <CircleMarker
+                          key={
+                            village.Village
+                          }
+                          center={[
+                            Number(
+                              village.Latitude
+                            ),
+                            Number(
+                              village.Longitude
+                            ),
+                          ]}
+                          radius={
+                            selectedVillage?.Village ===
+                            village.Village
+                              ? 13
+                              : 9
+                          }
+                          pathOptions={{
+                            color:
+                              getRiskColor(
+                                village.RiskCategory
+                              ),
+                            fillColor:
+                              getRiskColor(
+                                village.RiskCategory
+                              ),
+                            fillOpacity: 0.75,
+                            weight:
+                              selectedVillage?.Village ===
+                              village.Village
+                                ? 4
+                                : 2,
+                          }}
+                          eventHandlers={{
+                            click: () => {
+
+                              setSelectedVillage(
+                                village
+                              );
+
+                              setRelocation(
+                                null
+                              );
+
+                              setRelocationError(
+                                ""
+                              );
+
+                            },
+                          }}
+                        >
+
+                          <Popup>
+
+                            <div>
+
+                              <strong>
+                                {
+                                  village.Village
+                                }
+                              </strong>
+
+                              <br />
+
+                              Hazard:{" "}
+                              {hazard}
+
+                              <br />
+
+                              Risk Score:{" "}
+                              {Number(
+                                village.RiskScore
+                              ).toFixed(2)}
+
+                              <br />
+
+                              Category:{" "}
+                              {
+                                village.RiskCategory
+                              }
+
+                              <br />
+
+                              Population:{" "}
+                              {Number(
+                                village.Population
+                              ).toLocaleString()}
+
+                            </div>
+
+                          </Popup>
+
+                        </CircleMarker>
+
+                      )
+                    )}
+
+
+                    {recommendedSite && (
+
+                      <CircleMarker
+                        center={[
+                          Number(
+                            recommendedSite.latitude
+                          ),
+                          Number(
+                            recommendedSite.longitude
+                          ),
+                        ]}
+                        radius={14}
+                        pathOptions={{
+                          color: "#2563eb",
+                          fillColor: "#2563eb",
+                          fillOpacity: 0.85,
+                          weight: 4,
+                        }}
+                      >
+
+                        <Popup>
+
+                          <strong>
+                            Recommended Safe Site
+                          </strong>
+
+                          <br />
+
+                          {
+                            recommendedSite.site
+                          }
+
+                          <br />
+
+                          Safety Score:{" "}
+                          {
+                            recommendedSite.safety_score
+                          }
+
+                        </Popup>
+
+                      </CircleMarker>
+
+                    )}
+
+
+                    {routeCoordinates.length ===
+                      2 && (
+
+                      <Polyline
+                        positions={
+                          routeCoordinates
+                        }
+                        pathOptions={{
+                          color: "#2563eb",
+                          weight: 4,
+                          dashArray: "8 8",
+                        }}
+                      />
+
+                    )}
+
+                  </MapContainer>
+
+                </div>
+
+              </div>
+
+
+              <div className="details-panel">
+
+                <div className="panel-header">
+
+                  <div>
+
+                    <h2>
+                      Village Risk Details
+                    </h2>
+
+                    <p>
+                      Automatically calculated
+                      factors
+                    </p>
+
+                  </div>
+
+                </div>
+
+
+                {selectedVillage ? (
+
+                  <>
+
+                    <div className="village-title">
+
+                      <div>
+
+                        <h3>
+                          {
+                            selectedVillage.Village
+                          }
+                        </h3>
+
+                        <span>
+                          Population:{" "}
+                          {Number(
+                            selectedVillage.Population
+                          ).toLocaleString()}
+                        </span>
+
+                      </div>
+
+
+                      <div
+                        className="risk-score"
+                        style={{
+                          borderColor:
+                            getRiskColor(
+                              selectedVillage.RiskCategory
+                            ),
+                        }}
+                      >
+
+                        <strong>
+                          {Number(
+                            selectedVillage.RiskScore
+                          ).toFixed(1)}
+                        </strong>
+
+                        <span>
+                          {
+                            selectedVillage.RiskCategory
+                          }
+                        </span>
+
+                      </div>
+
+                    </div>
+
+
+                    <div className="factor-list">
+
+                      <FactorBar
+                        name="Hazard Exposure"
+                        value={
+                          selectedFactors.HazardExposure
+                        }
+                      />
+
+                      <FactorBar
+                        name="Population Vulnerability"
+                        value={
+                          selectedFactors.PopulationVulnerability
+                        }
+                      />
+
+                      <FactorBar
+                        name="Infrastructure Exposure"
+                        value={
+                          selectedFactors.InfrastructureExposure
+                        }
+                      />
+
+                      <FactorBar
+                        name="Accessibility Risk"
+                        value={
+                          selectedFactors.AccessibilityRisk
+                        }
+                      />
+
+                      <FactorBar
+                        name="Terrain Risk"
+                        value={
+                          selectedFactors.TerrainRisk
+                        }
+                      />
+
+                    </div>
+
+
+                    <div className="raw-data-card">
+
+                      <h3>
+                        Raw Input Data
+                      </h3>
+
+                      <div className="raw-grid">
+
+                        <div>
+                          <span>
+                            Elevation
+                          </span>
+
+                          <strong>
+                            {
+                              selectedVillage.Elevation
+                            }
+                          </strong>
+                        </div>
+
+
+                        <div>
+                          <span>
+                            Rainfall
+                          </span>
+
+                          <strong>
+                            {
+                              selectedVillage.Rainfall
+                            }
+                          </strong>
+                        </div>
+
+
+                        <div>
+                          <span>
+                            Road Distance
+                          </span>
+
+                          <strong>
+                            {
+                              selectedVillage.RoadDistance
+                            }
+                          </strong>
+                        </div>
+
+
+                        <div>
+                          <span>
+                            Slope
+                          </span>
+
+                          <strong>
+                            {
+                              selectedVillage.Slope
+                            }
+                          </strong>
+                        </div>
+
+
+                        <div>
+                          <span>
+                            River Distance
+                          </span>
+
+                          <strong>
+                            {
+                              selectedVillage.DistanceFromRiver
+                            }
+                          </strong>
+                        </div>
+
+
+                        <div>
+                          <span>
+                            Coast Distance
+                          </span>
+
+                          <strong>
+                            {
+                              selectedVillage.DistanceFromCoast
+                            }
+                          </strong>
+                        </div>
+
+                      </div>
+
+                    </div>
+
+                  </>
+
+                ) : (
+
+                  <div className="empty-state">
+                    Select a village on the map.
+                  </div>
+
+                )}
+
+              </div>
+
+            </section>
+
+
+            <section className="relocation-panel">
+
+              <div className="panel-header">
+
+                <div>
+
+                  <h2>
+                    Smart Relocation Optimizer
+                  </h2>
+
+                  <p>
+                    Find the best relocation site
+                    using population, capacity,
+                    distance, safety and budget.
+                  </p>
+
+                </div>
+
+              </div>
+
+
+              <div className="relocation-controls">
+
+                <div className="control-group">
+
+                  <label>
+                    Target Population
+                  </label>
+
+                  <input
+                    type="number"
+                    min="1"
+                    value={
+                      targetPopulation
+                    }
+                    onChange={(event) =>
+                      setTargetPopulation(
+                        event.target.value
+                      )
+                    }
+                  />
+
+                </div>
+
+
+                <div className="control-group">
+
+                  <label>
+                    Available Budget (₹)
+                  </label>
+
+                  <input
+                    type="number"
+                    min="1"
+                    value={budget}
+                    onChange={(event) =>
+                      setBudget(
+                        event.target.value
+                      )
+                    }
+                  />
+
+                </div>
+
+
+                <button
+                  className="primary-button"
+                  onClick={
+                    runRelocation
+                  }
+                  disabled={
+                    relocationLoading
+                  }
+                >
+                  {relocationLoading
+                    ? "Optimizing..."
+                    : "Find Best Relocation Site"}
+                </button>
+
+              </div>
+
+
+              {relocationError && (
+
+                <div className="error-box">
+
+                  <strong>
+                    Relocation Error:
+                  </strong>
+
+                  {" "}
+
+                  {relocationError}
+
+                </div>
+
+              )}
+
+
+              {relocation && (
+
+                <div className="relocation-result">
+
+
+                  <div className="recommendation-card">
+
+                    <div className="recommendation-label">
+                      RECOMMENDED SAFE SITE
+                    </div>
+
+                    <h3>
+                      {
+                        recommendedSite?.site
+                      }
+                    </h3>
+
+
+                    <div className="recommendation-grid">
+
+                      <div>
+                        <span>
+                          Safety Score
+                        </span>
+
+                        <strong>
+                          {
+                            recommendedSite?.safety_score
+                          }
+                        </strong>
+                      </div>
+
+
+                      <div>
+                        <span>
+                          Distance
+                        </span>
+
+                        <strong>
+                          {
+                            recommendedSite?.distance_km
+                          }{" "}
+                          km
+                        </strong>
+                      </div>
+
+
+                      <div>
+                        <span>
+                          Capacity
+                        </span>
+
+                        <strong>
+                          {Number(
+                            recommendedSite?.capacity ||
+                              0
+                          ).toLocaleString()}
+                        </strong>
+                      </div>
+
+
+                      <div>
+                        <span>
+                          Total Cost
+                        </span>
+
+                        <strong>
+                          ₹
+                          {Number(
+                            recommendedSite?.total_cost ||
+                              0
+                          ).toLocaleString(
+                            "en-IN"
+                          )}
+                        </strong>
+                      </div>
+
+                    </div>
+
+                  </div>
+
+
+                  <div className="optimization-card">
+
+                    <h3>
+                      Optimization Summary
+                    </h3>
+
+                    <p>
+                      Source village:{" "}
+                      <strong>
+                        {
+                          relocation.source_village
+                        }
+                      </strong>
+                    </p>
+
+                    <p>
+                      Hazard:{" "}
+                      <strong>
+                        {hazard}
+                      </strong>
+                    </p>
+
+                    <p>
+                      Source risk:{" "}
+                      <strong>
+                        {Number(
+                          relocation.source_risk_score ||
+                            0
+                        ).toFixed(2)}
+                      </strong>{" "}
+                      (
+                      {
+                        relocation.source_risk_category
+                      }
+                      )
+                    </p>
+
+                    <p>
+                      Remaining budget:{" "}
+                      <strong>
+                        ₹
+                        {Number(
+                          relocation.remaining_budget ||
+                            0
+                        ).toLocaleString(
+                          "en-IN"
+                        )}
+                      </strong>
+                    </p>
+
+                  </div>
+
+                </div>
+
+              )}
+
+
+              {relocation?.evaluated_sites
+                ?.length > 0 && (
+
+                <div className="sites-table-wrapper">
+
+                  <h3>
+                    Evaluated Relocation Sites
+                  </h3>
+
+                  <table className="sites-table">
+
+                    <thead>
+
+                      <tr>
+                        <th>Site</th>
+                        <th>Safety</th>
+                        <th>Distance</th>
+                        <th>Capacity</th>
+                        <th>Total Cost</th>
+                        <th>Optimization</th>
+                      </tr>
+
+                    </thead>
+
+
+                    <tbody>
+
+                      {relocation.evaluated_sites.map(
+                        (site) => (
+
+                          <tr key={site.site}>
+
+                            <td>
+                              {site.site}
+                            </td>
+
+                            <td>
+                              {site.safety_score}
+                            </td>
+
+                            <td>
+                              {
+                                site.distance_km
+                              }{" "}
+                              km
+                            </td>
+
+                            <td>
+                              {Number(
+                                site.capacity
+                              ).toLocaleString()}
+                            </td>
+
+                            <td>
+                              ₹
+                              {Number(
+                                site.total_cost
+                              ).toLocaleString(
+                                "en-IN"
+                              )}
+                            </td>
+
+                            <td>
+                              {Number(
+                                site.optimization_score
+                              ).toFixed(2)}
+                            </td>
+
+                          </tr>
+
+                        )
+                      )}
+
+                    </tbody>
+
+                  </table>
+
+                </div>
+
+              )}
+
+            </section>
+
+
+            {/* FIXED EXPLANATION SECTION */}
+
+            <section className="explanation-panel">
+
+              <div className="panel-header">
+
+                <div>
+
+                  <h2>
+                    Why did PUNARVAS give this score?
+                  </h2>
+
+                  <p>
+                    PUNARVAS converts the raw
+                    environmental and geographic
+                    data into five normalized risk
+                    factors and combines them using
+                    hazard-specific weights.
+                  </p>
+
+                </div>
+
+              </div>
+
+
+              <div className="overall-risk-card">
+
+                <div>
+
+                  <span>
+                    OVERALL {hazard.toUpperCase()} RISK
+                  </span>
+
+                  <strong>
+                    {selectedVillage
+                      ? Number(
+                          selectedVillage.RiskScore
+                        ).toFixed(2)
+                      : "--"}
+                    <small>
+                      {" "} / 100
+                    </small>
+                  </strong>
+
+                </div>
+
+                <div
+                  className="overall-risk-category"
+                  style={{
+                    color:
+                      selectedVillage
+                        ? getRiskColor(
+                            selectedVillage.RiskCategory
+                          )
+                        : "#64748b",
+                  }}
+                >
+                  {selectedVillage
+                    ? selectedVillage.RiskCategory
+                    : "No village selected"}
+                </div>
+
+              </div>
+
+
+              <div className="explanation-grid">
+
+                {Object.entries(
+                  FACTOR_NAMES
+                ).map(
+                  ([factor, displayName]) => {
+
+                    const value = Number(
+                      selectedFactors[factor] ||
+                        0
+                    );
+
+                    return (
+
+                      <div
+                        className="explanation-card"
+                        key={factor}
+                      >
+
+                        <div className="explanation-card-header">
+
+                          <strong>
+                            {displayName}
+                          </strong>
+
+                          <span>
+                            {value.toFixed(2)}
+                          </span>
+
+                        </div>
+
+
+                        <div className="explanation-mini-track">
+
+                          <div
+                            className="explanation-mini-fill"
+                            style={{
+                              width: `${Math.max(
+                                0,
+                                Math.min(
+                                  100,
+                                  value
+                                )
+                              )}%`,
+                            }}
+                          />
+
+                        </div>
+
+
+                        <p>
+                          {
+                            FACTOR_INFO[
+                              factor
+                            ]
+                          }
+                        </p>
+
+                      </div>
+
+                    );
+                  }
+                )}
+
+              </div>
+
+
+              <div className="weights-card">
+
+                <h3>
+                  {hazard} Risk Weights
+                </h3>
+
+                <div className="weights-grid">
+
+                  {analysis.weights &&
+                    Object.entries(
+                      analysis.weights
+                    ).map(
+                      ([factor, weight]) => (
+
+                        <div key={factor}>
+
+                          <span>
+                            {
+                              FACTOR_NAMES[
+                                factor
+                              ] || factor
+                            }
+                          </span>
+
+                          <strong>
+                            {(
+                              Number(weight) *
+                              100
+                            ).toFixed(0)}
+                            %
+                          </strong>
+
+                        </div>
+
+                      )
+                    )}
+
+                </div>
+
+              </div>
+
+
+              <div className="decision-box">
+
+                <strong>
+                  PUNARVAS Decision
+                </strong>
+
+                <p>
+
+                  {selectedVillage
+                    ? `${selectedVillage.Village} has a ${selectedVillage.RiskCategory.toLowerCase()} ${hazard.toLowerCase()} risk with a score of ${Number(selectedVillage.RiskScore).toFixed(2)} out of 100. The score is generated from automatically engineered risk factors rather than a manually entered score.`
+                    : "Select a village to view the PUNARVAS risk decision."}
+
+                </p>
+
+              </div>
+
+            </section>
+
+          </>
+
+        )}
+
+      </main>
+ <IndiaHistoricalMap hazard={hazard} />
+
+
+      <footer className="footer">
+
+        PUNARVAS • AI-Driven Disaster Relocation
+        & Rehabilitation Platform
+
+      </footer>
+
+    </div>
+  );
+}
+
+export default App;
