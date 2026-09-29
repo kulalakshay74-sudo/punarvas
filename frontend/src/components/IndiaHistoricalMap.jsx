@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { GeoJSON, MapContainer, TileLayer } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_URL || "";
 
 const INDIA_GEOJSON =
   "https://raw.githubusercontent.com/india-in-data/india-states-2019/master/india_states.geojson";
