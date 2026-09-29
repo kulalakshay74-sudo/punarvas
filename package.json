@@ -1,0 +1,6 @@
+{
+  "name":"punarvas-netlify",
+  "private":true,
+  "type":"module",
+  "dependencies":{"@netlify/functions":"latest"}
+}
