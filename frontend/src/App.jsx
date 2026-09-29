@@ -13,7 +13,7 @@ import "./App.css";
 import IndiaHistoricalMap from "./components/IndiaHistoricalMap";
 import "./historical-risk.css";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_URL || "";
 
 const HAZARDS = ["Flood", "Landslide", "Coastal Erosion", "Cloudburst"];
 
